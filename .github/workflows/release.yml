@@ -1,0 +1,170 @@
+name: 🚀 Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  release:
+    name: 🚀 Release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 🔧 Install dependencies
+        run: npm ci
+
+      - name: 🏗️ Build project
+        run: npm run build
+
+      - name: 🧪 Run tests
+        run: npm run test
+
+      - name: 🔍 Run quality checks
+        run: npm run quality:check
+
+      - name: 🚀 Release
+        id: release
+        uses: google-github-actions/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-type: node
+          package-name: lumos
+          changelog-types: |
+            [
+              {"type":"feat","section":"🚀 Features","hidden":false},
+              {"type":"fix","section":"🐛 Bug Fixes","hidden":false},
+              {"type":"perf","section":"⚡ Performance","hidden":false},
+              {"type":"docs","section":"📚 Documentation","hidden":false},
+              {"type":"deps","section":"📦 Dependencies","hidden":false},
+              {"type":"test","section":"🧪 Tests","hidden":false},
+              {"type":"ci","section":"🔧 CI/CD","hidden":false},
+              {"type":"chore","section":"🏠 Chores","hidden":true},
+              {"type":"style","section":"💎 Styles","hidden":true},
+              {"type":"refactor","section":"♻️ Refactoring","hidden":true}
+            ]
+
+      - name: 📦 Publish to NPM
+        if: steps.release.outputs.released == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: 🏷️ Create GitHub Release
+        if: steps.release.outputs.released == 'true'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          release_name: ${{ steps.release.outputs.tag }}
+          body: |
+            ## 🎉 What's New in ${{ steps.release.outputs.version }}
+
+            Check out the [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+            ### 📦 Installation
+            ```bash
+            npm install -g lumos@${{ steps.release.outputs.version }}
+            ```
+
+            ### 🔧 Usage
+            ```bash
+            lumos analyze "your error message"
+            ```
+          draft: false
+          prerelease: false
+
+  # 🎯 Post-release jobs
+  announce:
+    name: 📢 Announce Release
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    steps:
+      - name: 📢 Slack Notification
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: `🚀 New Lumos release: ${{ needs.release.outputs.version }}`,
+              attachments: [{
+                color: 'good',
+                fields: [{
+                  title: 'Version',
+                  value: '${{ needs.release.outputs.version }}',
+                  short: true
+                }, {
+                  title: 'Tag',
+                  value: '${{ needs.release.outputs.tag }}',
+                  short: true
+                }]
+              }]
+            }
+
+      - name: 📧 Discord Notification
+        if: env.DISCORD_WEBHOOK != ''
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        uses: Ilshidur/action-discord@master
+        with:
+          args: |
+            🚀 **New Lumos Release**: ${{ needs.release.outputs.version }}
+
+            📦 Install: \`npm install -g lumos@${{ needs.release.outputs.version }}\`
+            🔗 Release: https://github.com/${{ github.repository }}/releases/tag/${{ needs.release.outputs.tag }}
+
+  # 📊 Update metrics
+  metrics:
+    name: 📊 Update Metrics
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📊 Update package metrics
+        run: |
+          echo "Release ${{ needs.release.outputs.version }} completed at $(date -u)" >> .github/release-metrics.log
+          echo "Total releases: $(git tag | wc -l)" >> .github/release-metrics.log
